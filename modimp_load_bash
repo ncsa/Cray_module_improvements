@@ -1,0 +1,813 @@
+###########################################################################
+#                                                                         #
+# © 2013-2016 The Board of Trustees of the University of Illinois.        #
+# The "modimp" package composed on Blue Waters by Craig Steffen of the    #
+# NCSA Blue Waters Science and Engineering Applications Support team.     #
+#                                                                         #
+# csteffen@ncsa.illinois.edu                                              #
+#                                                                         #
+# public-facing documentation for the moment is found on the Blue Waters  #
+# portal on this page:                                                    #
+# https://bluewaters.ncsa.illinois.edu/modules                            #
+#                                                                         #
+###########################################################################
+
+# file to be sourced from within bash
+# instantiates (but doesn't activate) functions for tab-completion for modules
+
+# Options that control what things get loaded into the shell environment.  In all
+# cases, the "no" option uses LESS memory in the shell environment.
+
+# MODIMP_KEEP_MODULE_LIST_IN_ENV:
+# if "no", keeps available module list in a disk file. 
+# if "yes", keeps availalbe module list in an environment variable.
+# if "yes", can add tens of kB to the shell environment.
+if [ ! $MODIMP_KEEP_MODULE_LIST_IN_ENV ]; then
+    MODIMP_KEEP_MODULE_LIST_IN_ENV="no"
+    export MODIMP_KEEP_MODULE_LIST_IN_ENV
+fi
+# MODIMP_ENABLE_DYNAMIC_PROMPT:
+# if "yes", loads functions for dynamic module-sensitive prompt, along with 
+# helper functions.
+# if "no", loads none of those functions, so that functionality is not available.
+# Loading ("yes") takes up 5kB or so in shell environment.
+if [ ! $MODIMP_ENABLE_DYNAMIC_PROMPT ] ; then
+    MODIMP_ENABLE_DYNAMIC_PROMPT="no"
+    export MODIMP_ENABLE_DYNAMIC_PROMPT
+fi
+
+# if the user has set the magic exclude file, then don't load anything
+if [ -f $HOME/.no_modimp ]; then
+    return;
+fi
+if [ -f $HOME/.no_modimp_warning ]; then
+    echo ""
+    echo "The file $HOME/.no_modimp_warning exists; aborting loading modimp init file."
+    echo ""
+    return;
+fi
+
+# if we're in a batch job, we don't want to load anything
+# if we're in an interactive job, though, we do want to load ModImp
+if [[ "$PBS_ENVIRONMENT" ]] ; then
+    if [[ $PBS_ENVIRONMENT != "PBS_INTERACTIVE" ]] ; then
+	if [[ "$MODIMP_AVAILABLE_MODULES" ]] ; then
+	    modimp_tabcomplete_off
+	    modimp_show_all_if_ambiguous_off
+	    modimp_module_to_stdout_off
+	    modimp_prompt_reset
+	    export MODIMP_AVAILABLE_MODULES=""
+	fi
+	function modimp_module_to_stdout_on { 
+	    echo ""
+	}
+	function modimp_tabcomplete_on { 
+	    echo ""
+	}
+	return;
+    fi
+fi
+
+function autocomplete_modules_setup {
+# check to see if the module file already exists
+    if [ $MODIMP_KEEP_MODULE_LIST_IN_ENV != "yes" ] ; then
+	dated_modulefile_name="/tmp/.modimp_available_${USER}_`date +%Y_%m_%d`"
+	if [ ! -e ${dated_modulefile_name} ]; then
+	    rm -f /tmp/.modimp_available_${USER}_*
+	fi
+    fi
+# An internal variable to list all available modules for ourselves so that we 
+# don't have to trawl the file system every single time someone hits <tab>.
+    MODIMP_AVAILABLE_MODULES=""
+# list of directories in MODULEPATH as separate strings    
+    mod_dir_list=$(echo $MODULEPATH | tr ":" "\n")
+# this for runs one per directory in the module path
+    for moddir in $mod_dir_list; do
+	directory_name_length=${#moddir}
+        file_list=$(find $moddir 2> /dev/null)
+#       Likewise, this for runs for every file within that directory 
+        for filename in $file_list; do
+	    # filenames are of the form 
+	    # /xx/yy/zz/modname/modversion
+	    # or possibly /xx/yy/zz/modname
+	    # where /xx/yy/zz is the entry in the MODULEPATH
+	    modname_position=$(($directory_name_length+1))
+	    modname_and_version_length=$((${#filename}-$modname_position))
+	    modulename_and_version=${filename:$modname_position:$modname_and_version_length}
+	    modname_leading_character=${modulename_and_version:0:1}
+	    # leave off list if first character of the modulename is "."
+	    if [[ $modname_leading_character == "." ]]; then
+		continue
+	    fi
+	    # if there's a slash, also leave off the name if the first character after the slash is "."
+	    if [[ $modulename_and_version =~ \/\. ]]; then
+	        continue;
+	    fi
+
+            MODIMP_AVAILABLE_MODULES+=$modulename_and_version
+            MODIMP_AVAILABLE_MODULES+=":"
+        done
+    done
+
+    if [ $MODIMP_KEEP_MODULE_LIST_IN_ENV != "yes" ] ; then
+	echo $MODIMP_AVAILABLE_MODULES > ${dated_modulefile_name}
+	export MODIMP_AVAILABLE_MODULES=""
+    else
+	export MODIMP_AVAILABLE_MODULES
+    fi
+
+}
+export -f autocomplete_modules_setup
+
+function modimp_resync {
+    rm -f /dev/shm/.modimp_available_${USER}_*
+    autocomplete_modules_setup
+}
+export -f modimp_resync
+
+function autocomplete_modules { 
+    subcommands_list="load:add:show:display:available:unload:rm:list:swap:switch:use:unuse"
+    
+    # Used to have a sanity check here to make sure first item on command line was "module". 
+    # Removed because if user aliased the module command, tab-completion stopped working.
+
+    # split the to-be-completed command line into an array
+    read -a command_line_array <<<"$COMP_LINE"
+    num_command_line_elements=${#command_line_array[@]}
+
+    # if the user types "module " then TAB
+    if [[ $num_command_line_elements -eq 1 ]]; then
+	echo "load"
+	echo "add"
+	echo "show"
+	echo "display"
+	echo "available"
+	echo "unload"
+	echo "rm"
+	echo "list"
+	echo "swap"
+	echo "switch"
+	echo "use"
+	echo "unuse"
+	exit
+    fi
+        
+    # separate out the "module" sub-command
+    module_sub_command=${command_line_array[1]}
+    
+    # argument 2 to this function is the argument being tab-completed
+    being_completed=$2
+    being_completed_length=${#being_completed}
+    
+############ construct (or retreive) lists of modules
+    
+    # first, the list of modules that are currently loaded
+    loaded_modules_array=$(echo $LOADEDMODULES | tr ":" "\n")
+    
+    # grab the list of available modules
+    if [ $MODIMP_KEEP_MODULE_LIST_IN_ENV != "yes" ] ; then
+	dated_modulefile_name="/tmp/.modimp_available_${USER}_`date +%Y_%m_%d`"
+	if [ ! -f ${dated_modulefile_name} ]; then
+	    autocomplete_modules_setup;
+	fi
+	read -r MODIMP_AVAILABLE_MODULES<${dated_modulefile_name}
+    fi
+    # (If MODIMP_KEEP_MODULE_LIST_IN_ENV is "yes", MODIMP_AVAILABLE_MODULES is already
+    # in the shell environment.)
+    available_modules_array=$(echo $MODIMP_AVAILABLE_MODULES | tr ":" "\n")
+    
+    # set and filter the list of possible completions depending on the sub-command
+    
+    case "$module_sub_command" in
+	load | add | show | display | available | avail )
+	    possible_completions_array=("${available_modules_array[@]}")
+	    ;;
+	unload | rm | list )
+	    possible_completions_array=("${loaded_modules_array[@]}")
+	    ;;
+	swap | switch )
+	    case "$num_command_line_elements" in
+		2 )    # user has typed "module swap " so first completion is the list of loaded modules
+		    possible_completions_array=("${loaded_modules_array[@]}")
+		    ;;
+		4 )    # user has typed something like "module swap something/1.2.3 s" and then hit tab
+		    
+		   # NOTE: we could put a filter here to make sure that completion names here match the module 
+		   # name from the previous argumnent.  However, I don't think that's the right thing to do. 
+		   # It's legal within module to do "module swap foo/1.0 bar/8.2", i.e. swap modules that aren't the same 
+		   # base package, so we should support that in the tab-auto-completion.  Cray uses this, for instance, 
+                   # to switch between overall compiler environments. Example: "module swap PrgEnv-gnu PrgEnv-cray" is 
+		   # often use on Cray systems.
+		    
+		    possible_completions_array=("${available_modules_array[@]}")
+		    ;;
+
+		3 )  
+		    if [[ $being_completed_length -eq 0 ]]; then
+		# user typed "module swap something " then hit TAB. Possible completions are available 
+		# packages with the same base name as the package name in the previous argument
+			initial_completions_array=("${available_modules_array[@]}")
+			
+		# name of module to be swapped (possibly including version number)
+			raw_module_to_be_swapped=${command_line_array[2]}
+			
+		# find position of "/" character to see if user supplied module version number
+			position_of_slash=$(echo $raw_module_to_be_swapped | grep -b -o "/" | awk 'BEGIN {FS=":"}{print $1}')
+			
+		# new completions array (really a string) after filtering that we're about to populate
+			second_completions_array=""
+			
+			if [[ $position_of_slash -gt 0 ]]; then
+			    base_module_length=$position_of_slash
+			else
+			    base_module_length=${#raw_module_to_be_swapped}
+			fi
+			
+################# special case for Cray modules environment
+		# with modules on Cray systems, to switch between compiler environments 
+		# (gnu, Cray, PGI, Intel) you swap modules of the type PrgEnv-gnu, PrgEnv-cray
+		# and so on.  So the module_name_length is set to include suggestion of 
+		# things like "module swap PrgEnv-intel PrgEnv-cray"
+			module_name_prefix=${raw_module_to_be_swapped:0:6}
+			if [[ $module_name_prefix == "PrgEnv" ]]; then
+			    base_module_length=6
+			fi
+################# end Cray special case
+			
+		# just the base module name to be swapped, with version number stripped
+			base_module_to_be_swapped=${raw_module_to_be_swapped:0:base_module_length}
+			version_length=${#raw_module_to_be_swapped}-position_of_slash-1
+			
+		# walk through the initial completions array and only pass along matching module names
+		# output list is packaed into a single string separated by ":"
+			for comp in $initial_completions_array; do
+			    match_string=${comp:0:base_module_length}
+			    if [ $match_string == $base_module_to_be_swapped ]; then
+				second_completions_array+=$comp
+				second_completions_array+=":"
+			    fi
+			done
+		# pass on list of matched module names as the completion list
+		# parse out the constructed list into an array
+			possible_completions_array=$(echo $second_completions_array | tr ":" "\n")
+		    else
+		# user has typed something like "module swap so" and then hit
+		# TAB so the completion list is the list of loaded modules
+			possible_completions_array=("${loaded_modules_array[@]}")
+		    fi
+		    ;;
+	    esac
+	    ;;
+	use | unuse )
+	    # in the case of use or unuse, we're actually looking to match a directory in the file
+	    # system, so we kick this function out without outputting, and the shell will fall back
+	    # to completing on available directories.
+#	    ls -1 -d -p ${being_completed}* 2>/dev/null
+	    
+	    # The structure of this bit (from this comment block to the return 
+	    # is basically to fool bash into doing directory completion in a logical way that
+	    # makes sense on the command line.  If there's only one answer left when the user
+	    # hits tab, if this function just outputs that one function, then bash a space after
+	    # the completed directory, which is not what you want and is annoying.  If there's 
+	    # only one possibility, this script outputs that possibility TWICE and artificially 
+	    # adds "\t" to the end of the second one, so bash thinks they're different.  This means
+	    # the tab-complete line looks and works logically.  The user never sees the actual 
+	    # output, just what bash deduces about the possible completions.
+	    # 
+	    # It looks weird, but I stumbled on this combination, and it works.
+	    # -- Craig Steffen 2016APR06
+	    dir_completions=(`ls -1 -d -p ${being_completed}* 2>/dev/null`)
+	    num_possible=${#dir_completions[@]}
+	    blah="\t"
+	    if (( num_possible == 1 )); then 
+		echo ${dir_completions[0]}
+		echo ${dir_completions[0]}$blah
+	    else
+		for item in "${dir_completions[@]}"
+		do
+		    echo $item
+		done
+	    fi	    
+
+	    return;
+	    ;;
+	*)
+	    # user gave a sub-command we don't know
+	    if [[ $3 == "module" ]]; then
+		possible_completions_array=$(echo $subcommands_list | tr ":" "\n")
+	    fi
+    esac
+    
+############ now filter that list against the current argument the user 
+##           is tab-completing, and echo the results back to bash 
+    
+    if [[ $being_completed_length -eq 0 ]]; then 
+	for x in $possible_completions_array; do 
+	    echo "$x"  
+	done     
+    else
+	for x in $possible_completions_array; do 
+	    # match_string is the cantidate trimmed to the length of the text the user 
+	    # typed before hitting <TAB>
+	    match_string=${x:0:being_completed_length}
+	    if [ $match_string == $being_completed ]; then 
+		echo "$x" 
+	    fi 
+	    
+############ Cray special case prefix checks.  These pre-pend common Cray module name 
+#            prefixes to the guess list if there are modules that match.
+	    
+	    # This section looks for packages with Cray-style pre-pended package names.
+	    # So for instance, if the the user types: module load Hug<tab>
+	    # and the package cray-Hugepages exists, then that package will be listed in the 
+	    # auto-complete list
+
+	    # looks for packages with prepended "cray-"
+	    cray_prepended_length=$(($being_completed_length+5))
+	    cray_prepended_match_string=${x:0:cray_prepended_length}
+	    cray_prepended_being_completed="cray-"
+	    cray_prepended_being_completed+=$being_completed	    
+	    if [ $cray_prepended_match_string == $cray_prepended_being_completed ]; then 
+		echo "$x" 
+	    fi 	    
+	    
+	    # and for for "craype-" packages
+	    craype_prepended_length=$(($being_completed_length+7))
+	    craype_prepended_match_string=${x:0:craype_prepended_length}
+	    craype_prepended_being_completed="craype-"
+	    craype_prepended_being_completed+=$being_completed
+	    if [ $craype_prepended_match_string == $craype_prepended_being_completed ]; then 
+		echo "$x" 
+	    fi
+
+	    # likewise "xt-"
+	    xt_prepended_length=$(($being_completed_length+3))
+	    xt_prepended_match_string=${x:0:xt_prepended_length}
+	    xt_prepended_being_completed="xt-"
+	    xt_prepended_being_completed+=$being_completed
+	    if [[ $xt_prepended_match_string == $xt_prepended_being_completed ]]; then 
+		echo "$x" 
+	    fi
+############ End of Cray prefix list
+
+	done
+    fi    
+}
+export -f autocomplete_modules
+
+function modimp_tabcomplete_on {
+    if [ -f $HOME/.no_modimp ]; then
+	return;
+    fi
+    if [ -f $HOME/.no_modimp_warning ]; then
+	echo "The file $HOME/.no_modimp_warning exists; modimp commands will not load."
+	return;
+    fi
+# run the setup to crawl the file system to create shell 
+# variable with list of available modules
+    autocomplete_modules_setup
+    
+# set the function for tab-autocompletion for "module" command
+    complete -C autocomplete_modules module
+}
+export -f modimp_tabcomplete_on
+
+function modimp_tabcomplete_off {
+    export MODIMP_AVAILABLE_MODULES=""
+    complete -r module
+    rm -f /tmp/.modimp_available_${USER}_*
+}
+export -f modimp_tabcomplete_off
+
+function modimp_show_all_if_ambiguous_on {
+    if [ -f $HOME/.no_modimp ]; then
+	return;
+    fi
+    if [ -f $HOME/.no_modimp_warning ]; then
+	echo "The file $HOME/.no_modimp_warning exists; modimp commands will not load."
+	return;
+    fi
+    bind 'set show-all-if-ambiguous on'
+}
+export -f modimp_show_all_if_ambiguous_on
+
+function modimp_show_all_if_ambiguous_off {
+    bind 'set show-all-if-ambiguous off'
+}
+export -f modimp_show_all_if_ambiguous_off
+
+function modimp_module_to_stdout_off {
+    function module() { 
+	if [[ $1 == "purge" ]]; then 
+	    echo ""
+	    echo "BEWARE: Running \"module purge\" puts your environment in an unreliable state."
+	    echo "Doing so makes it difficult to debug problems or for support staff to help"
+	    echo "you. Please structure your build so that you don't have to do this."
+	    echo ""
+	fi
+	
+	eval `${MODULESHOME}/bin/modulecmd bash $*`; 
+    }
+    export -f module
+}
+export -f modimp_module_to_stdout_off
+
+function modimp_module_to_stdout_on {
+    if [ -f $HOME/.no_modimp ]; then
+	return;
+    fi
+    if [ -f $HOME/.no_modimp_warning ]; then
+	echo "The file $HOME/.no_modimp_warning exists; modimp commands will not load."
+	return;
+    fi
+    function moduleraw() { 
+	eval `${MODULESHOME}/bin/modulecmd bash $*`; 
+    }
+    function module() { 
+	if [[ $1 == "purge" ]]; then 
+	    echo ""
+	    echo "BEWARE: Running \"module purge\" puts your environment in an unreliable state."
+	    echo "Doing so makes it difficult to debug problems or for support staff to help"
+	    echo "you. Please structure your build so that you don't have to do this."
+            echo ""
+	fi 
+	moduleraw $* 2>&1 ; }
+    export -f moduleraw
+    export -f module
+}
+export -f modimp_module_to_stdout_on
+
+# Interactive shell stuff below.  All these functions and such take up space
+# in the slell environment, so if shell space is precious, we leave it out.
+if [ $MODIMP_ENABLE_DYNAMIC_PROMPT == "yes" ] ; then
+
+    function pmt_init(){
+	MODIMP_PROMPT_SALT=""
+    }
+    export -f pmt_init
+    
+    function pmt_cpat(){
+	if [ `module list 2>&1 | grep perftools | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="P"; else MODIMP_PROMPT_SALT+="_"; fi
+    }
+    export -f pmt_cpat
+    
+    function pmt_dar(){
+	if [ `module list 2>&1 | grep darshan | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="D"; else MODIMP_PROMPT_SALT+="_"; fi
+    }
+    export -f pmt_dar
+    
+    function pmt_can35(){
+	if [ `module list 2>&1 | grep craype-accel-nvidia35 | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="5"; else MODIMP_PROMPT_SALT+="_"; fi
+    }
+    export -f pmt_can35
+    
+    function pmt_cudatk(){
+	if [ `module list 2>&1 | grep cudatoolkit | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="U"; else MODIMP_PROMPT_SALT+="_"; fi
+    }
+    export -f pmt_cudatk
+    
+    function pmt_ctkc35(){
+	if [ `module list 2>&1 | grep craype-accel-nvidia35 | wc -l` -ne "0" ]; then
+	    MODIMP_PROMPT_SALT+="5"; 
+	else
+       	    if [ `module list 2>&1 | grep cudatoolkit | wc -l ` -ne "0" ]; then 
+		MODIMP_PROMPT_SALT+="T"; 
+	    else MODIMP_PROMPT_SALT+="_";
+	    fi
+	fi    
+    }
+    export -f pmt_ctkc35
+    
+    function pmt_space(){
+	MODIMP_PROMPT_SALT+=" "
+    }
+    export -f pmt_space
+    
+    function pmt_dash(){
+	MODIMP_PROMPT_SALT+="-"
+    }
+    export -f pmt_dash
+    
+    function pmt_und(){
+	MODIMP_PROMPT_SALT+="_"
+    }
+    export -f pmt_und
+    
+    function pmt_pipe(){
+	MODIMP_PROMPT_SALT+="|"
+    }
+    export -f pmt_pipe
+    
+    function pmt_cmpS(){
+	if [ `module list 2>&1 | grep PrgEnv-cray | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="C"; fi
+	if [ `module list 2>&1 | grep PrgEnv-pgi | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="P"; fi
+	if [ `module list 2>&1 | grep PrgEnv-gnu | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="N"; fi
+	if [ `module list 2>&1 | grep PrgEnv-intel | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="I"; fi
+    }
+    export -f pmt_cmpS
+    
+    function pmt_cmpL(){
+	if [ `module list 2>&1 | grep PrgEnv-cray | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="Cray"; fi
+	if [ `module list 2>&1 | grep PrgEnv-pgi | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="PGI"; fi
+	if [ `module list 2>&1 | grep PrgEnv-gnu | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="Gnu"; fi
+	if [ `module list 2>&1 | grep PrgEnv-intel | wc -l` -ne "0" ]; then MODIMP_PROMPT_SALT+="Intel"; fi
+    }
+    export -f pmt_cmpL
+    
+    function pmt_stripe(){
+	STRIPE_STRING=`lfs getstripe -d . 2> /dev/null`
+	regex_search1="no stripe info"
+	if [[ $STRIPE_STRING =~ $regex_search1 ]]; then
+	    MODIMP_PROMPT_SALT+="___"
+	else
+	    regex_search2="stripe_count:\s+([[:digit:]]+)\s+"
+	    if [[ $STRIPE_STRING =~ $regex_search2 ]]; then
+#	    MODIMP_PROMPT_SALT+=$1
+		MODIMP_PROMPT_SALT+=$(printf "%3d" ${BASH_REMATCH[1]})
+	    else
+		MODIMP_PROMPT_SALT+="XXX"
+	    fi
+	fi
+    }
+    export -f pmt_stripe
+    
+    function pmt_make(){
+	if [[ -f "Makefile" ]]; then
+	    MODIMP_PROMPT_SALT+="M"
+	else
+	    MODIMP_PROMPT_SALT+="_"
+	fi
+    }
+    export -f pmt_make
+    
+    function pmt_finalize(){
+	PS1=$MODIMP_PROMPT_PREAMBLE
+	PS1+="$MODIMP_PROMPT_SALT"
+	PS1+="$MODIMP_PROMPT_POSTAMBLE"
+	if [ "$PBS_ENVIRONMENT" = "PBS_INTERACTIVE" ] ; then
+	    PS1+="\e[1;31m[INTERACTIVE JOB]\e[0m "
+	fi
+    }
+    export -f pmt_finalize
+    
+    function pmt_finalize_noPBS(){
+	PS1=$MODIMP_PROMPT_PREAMBLE
+	PS1+="$MODIMP_PROMPT_SALT"
+	PS1+="$MODIMP_PROMPT_POSTAMBLE"
+    }
+    export -f pmt_finalize_noPBS
+    
+    function modimp_prompt_reset {
+	if [[ $MODIMP_PROMPT_PREAMBLE = "" || $PROMPT_COMMAND = "" ]]; then
+	    echo 
+	    echo "WARNING! You either didn't have MODIMP_PROMPT_PREAMBLE or PROMPT_COMMAND set!"
+	    echo "This problably means you didn't have a modimp dynamic prompt set up after all"
+	    echo "just set PROMPT_COMMAND to \"\" and set PS1 as you'd like it to restore"
+	    echo "your prompt."
+	    echo 
+	    return;
+	fi
+	echo
+	echo "removing modimp tags from your prompt.  Restoring"
+	echo "what your prompt would look like without them."
+	echo 
+	NEWPROMPT=${MODIMP_PROMPT_PREAMBLE}
+	NEWPROMPT+=${MODIMP_PROMPT_POSTAMBLE}
+    # kludgy removal of extra spaces to keep from building up spaces with _setup and _reset cycles
+    # this would be better with the bash equivalent of /g here to keep running until it doesn't find any
+    # more double spaces
+	REALNEWPROMPT=${NEWPROMPT//  / }
+	REALNEWPROMPT=${REALNEWPROMPT//  / }
+	REALNEWPROMPT=${REALNEWPROMPT//  / }
+	export PS1=$REALNEWPROMPT
+	export PROMPT_COMMAND=""
+	export MODIMP_PROMPT_POSTAMBLE=""
+	export MODIMP_PROMPT_PREAMBLE=""
+    }
+    
+    function modimp_prompt_help {
+	echo 
+	echo "To get started quickly: run the command modimp_prompt_setup.  Adjust"
+	echo "PROMPT_COMMAND to taste.  To make that prompt permanent, run modimp_prompt_commit."
+	echo ""
+	echo "The prompt enhancement feature of the MODIMP package works by way of the"
+	echo "special PROMPT_COMMAND variable within bash.  The user sets the shell variable"
+	echo "MODIMP_PROMPT_PREAMBLE to be the prompt characters before the special ones, using"
+	echo "normal bash tags that one would put in PS1.  Likewise set MODIMP_PROMPT_POSTAMBLE"
+	echo "to the trailing prompt characters.  Then set the PROMPT_COMMAND variable to be"
+	echo "a series of shell functions separated by \";\"s.  Except for the init and finalize"
+	echo "functions, each function creates a dynamic \"special\" character in the prompt that,"
+	echo "for instance, indicates that a module is loaded by indicating a letter and indicates"
+	echo "the module is *not* loaded by an \"_\".  Other functions are slightly different."
+	echo "To set it up, set MODIMP_PROMPT_PREAMBLE, MODIMP_PROMPT_POSTAMBLE, and"
+	echo "PROMPT_COMMAND, and be sure to \"export PROMPT_COMMAND\".  Here's a working"
+	echo "example to work from:"
+	echo ""
+	echo 'export MODIMP_PROMPT_PREAMBLE="\u@\h \A \w "'
+	echo 'export MODIMP_PROMPT_POSTAMBLE=" \$ "'
+	echo 'PROMPT_COMMAND="pmt_init ; pmt_cpat ; pmt_dar ; pmt_ctkc35 ; pmt_dash ; pmt_stripe; pmt_dash ; pmt_cmpL ; pmt_dash ; pmt_make ; pmt_finalize"'
+	echo 'export PROMPT_COMMAND'
+	echo ""
+	echo "Run the shell function modimp_prompt_reset to remove all dynamic functions from your"
+	echo "prompt.  Run modimp_prompt_setup to set up an initial configuration with a dynamic prompt"
+	echo "to try out.  Modify the PROMPT_COMMAND variable to adjust the dynamic part of the prompt."
+	echo "This will go away when you log out and back in.  Once you like how your dynamic"
+	echo "prompt is set up, run modimp_prompt_commit to save that configuration to your .profile"
+	echo ""
+    }
+    
+    function modimp_prompt_setup {
+	if [ -f $HOME/.no_modimp ]; then
+	    return;
+	fi
+	if [ -f $HOME/.no_modimp_warning ]; then
+	    echo "The file $HOME/.no_modimp_warning exists; modimp commands will not load."
+	    return;
+	fi
+	echo 
+	echo "This function takes your current prompt and sets up an initial modimp dynamic prompt."
+	echo 
+	if [[ $MODIMP_PROMPT_PREAMBLE != "" ]]; then
+	    echo
+	    echo "However, You already have modimp variables set (MODIMP_PROMPT_PREAMBLE)!";
+	    echo "(If you want to run this command with a different option to get a different";
+	    echo "prompt, first run modimp_prompt_reset to go back to a non-dynamic prompt, then"
+	    echo "run your \"modimp_prompt_setup XXX\" command.)"
+	    echo 
+	    return;
+	fi
+	if [[ $MODIMP_PROMPT_POSTAMBLE != "" ]]; then
+	    echo
+	    echo "However, You already have modimp variables set (MODIMP_PROMPT_POSTAMBLE)!";
+	    echo 
+	    return;
+	fi
+	if [[ $PROMPT_COMMAND != "" ]]; then
+	    echo
+	    echo "However, You already have modimp variables set (PROMPT_COMMAND)!";
+	    echo 
+	    return;
+	fi
+	export MODIMP_PROMPT_PREAMBLE=$PS1;
+	export MODIMP_PROMPT_POSTAMBLE=" ";
+	if [ `expr match "$MODIMP_PROMPT_PREAMBLE" '$'` ] ; then
+	    export MODIMP_PROMPT_PREAMBLE=${MODIMP_PROMPT_PREAMBLE//\$/}
+	    export MODIMP_PROMPT_PREAMBLE=${MODIMP_PROMPT_PREAMBLE//$/}
+	    export MODIMP_PROMPT_PREAMBLE=${MODIMP_PROMPT_PREAMBLE//  / }
+	    export MODIMP_PROMPT_POSTAMBLE=" \$ ";
+	fi
+	
+	PROMPT_COMMAND="pmt_init ; pmt_cpat ; pmt_dar ; pmt_ctkc35 ; pmt_dash ; pmt_stripe; pmt_dash ; pmt_cmpL ; pmt_dash ; pmt_make ; pmt_finalize"
+	if [[ $1 = "PrgEnv" ]]; then
+	    PROMPT_COMMAND="pmt_init ; pmt_cmpL ; pmt_finalize";
+	fi
+	if [[ $1 = "compact" ]]; then
+	    PROMPT_COMMAND="pmt_init ; pmt_pipe ; pmt_cpat ; pmt_dar ; pmt_ctkc35 ; pmt_make ; pmt_cmpS ; pmt_pipe ; pmt_finalize"
+	fi
+	export PROMPT_COMMAND;
+	
+	echo "Ok, now MODIMP_PROMPT_PREAMBLE, MODIMP_PROMPT_POSTAMBLE, and PROMPT_COMMAND now set."
+	echo "adjust their values to change the dynamic prompt.  Run modimp_prompt_commit to install"
+	echo "the current configuration to your .profile file."
+	echo 
+    }
+    
+    function modimp_prompt_commit {
+	if [ -f $HOME/.no_modimp ]; then
+	    return;
+	fi
+	if [ -f $HOME/.no_modimp_warning ]; then
+	    echo "The file $HOME/.no_modimp_warning exists; modimp commands will not load."
+	    return;
+	fi
+	DEFAULT_INSTALL_FILE="$HOME/.profile"    
+	length_of_first_arg=${#1}
+	install_to_file=$1
+	if (( $length_of_first_arg > 0 )); then
+	    echo "you specified to install the modimp load commands into the file: $install_to_file"
+	else
+	    echo 
+	    echo "The first argument of this script is the name of the file into which the modimp"
+	    echo "prompt setup are to be inserted.  Typically, this will be the .profile file"
+	    echo "in your home directory.  To install there, run this command:"
+	    echo 
+	    echo "modimp_prompt_commit $DEFAULT_INSTALL_FILE"
+	    echo
+	    return;
+	fi
+	
+	target_grep_test=`grep MODIMP_PROMPT_PREAMBLE $install_to_file`
+	contains_MODIMP_PROMPT=${#target_grep_test}
+	target_grep_test=`grep MODIMP_PROMPT_POSTAMBLE $install_to_file`
+	contains_MODIMP_PROMPT+=${#target_grep_test}
+	
+	if (( $contains_MODIMP_PROMPT > 0 )); then
+	    echo 
+	    echo "It looks like the target file already has MODIMP_PROMPT definitions installed, aborting."
+	    echo "Please remove the old prompt definition section from that file before committing your"
+	    echo "current prompt."
+	    echo 
+	    return;
+	fi
+	
+	if [[ $MODIMP_PROMPT_PREAMBLE = "" && $MODIMP_PROMPT_POSTAMBLE = "" ]]; then
+	    echo 
+	    echo "Your MODIMP_PROMPT_PREAMBLE and MODIMP_PROMPT_POSTAMBLE are empty!"
+	    echo "This means that your prompt will"
+	    echo "have no static characters at all (blank).  If you really want this, you'll"
+	    echo "have to install this configuration manually.  (This may happen because you"
+	    echo "ran modimp_prompt_reset.  You'll have to run modimp_prompt_setup or else"
+	    echo "set up a valid dynamic prompt so there's something to \"commit\".)"
+	    echo 
+	    echo " your MODIMP_PROMPT_PREAMBLE = >>$MODIMP_PROMPT_PREAMBLE<<"
+	    echo " your MODIMP_PROMPT_POSTAMBLE = >>$MODIMP_PROMPT_POSTAMBLE<<"
+	    
+	    return;
+	fi
+	if [[ $PROMPT_COMMAND = "" ]]; then
+	    echo
+	    echo "Your PROMPT_COMMAND variable is empty! That means there's no valid"
+	    echo "dynamic prompt configuration to be \"commit\"ed.  (This may be because you"
+	    echo "ran modimp_prompt_reset).  You can set up a configuration manually"
+	    echo "(run modimp_prompt_help for details) or run modimp_prompt_setup to get"
+	    echo "a generic one set up for you."
+	    echo 
+	    return;
+	fi
+	TARGETFILE=$install_to_file
+	echo "" >> ${TARGETFILE}
+	echo "#" >> ${TARGETFILE}
+	echo "# Modimp dynamic prompt setup.  Modify the PREAMBLE and POSTAMBLE variables to set" >> ${TARGETFILE}
+	echo "# the static parts of your prompt.  Add and remove functions in the PROMPT_COMMAND" >> ${TARGETFILE}
+	echo "# to change the characters in the dynamic prompt.  The PROMPT_COMMAND should *always*" >> ${TARGETFILE}
+	echo "# begin with pmt_init and should always end with pmt_finalize (or equivalent)." >> ${TARGETFILE}
+	
+	echo 'if [[ `declare -f -F pmt_init` ]]; then' >> ${TARGETFILE}
+	echo "  echo \"Loading Modimp dynamic prompt.\"" >> ${TARGETFILE}
+	echo "  echo " >> ${TARGETFILE}
+	echo "  export MODIMP_PROMPT_PREAMBLE=\"${MODIMP_PROMPT_PREAMBLE}\"" >> ${TARGETFILE}
+	echo "  export MODIMP_PROMPT_POSTAMBLE=\"${MODIMP_PROMPT_POSTAMBLE}\"" >> ${TARGETFILE}
+	echo "  export PROMPT_COMMAND=\"${PROMPT_COMMAND}\"" >> ${TARGETFILE}
+	echo "else" >> ${TARGETFILE}
+	echo "  echo \"Modimp dynamic prompt: modimp functions not defined; \"" >> ${TARGETFILE}
+	echo "  echo \"skipping loading dynamic prompt. \"" >> ${TARGETFILE}
+	echo "  echo " >> ${TARGETFILE}
+	echo "fi" >> ${TARGETFILE}
+	echo "" >> ${TARGETFILE}
+	echo "" 
+	echo "Finished installing. Log out and log back in to test your prompt.  Edit the function"
+	echo "definitions to change the dynamic prompt."
+	echo ""
+    }
+    
+    function modimp_help {
+	echo ""
+	echo "The modimp_* commands control parts of the \"module improvements\" package"
+	echo "in your shell, which you have loaded.  If you forget one of these commands,"
+	echo "you can just type modimp and hit tab a few times, the shell will list all of them."
+	echo ""
+	echo "modimp_module_to_stdout_on    modimp_module_to_stdout_off"
+	echo "  These turn on and off the feature that when you run a \"module *\" command,"
+	echo "  the output goes to standard out (which means you can pipe it to grep and"
+	echo "  other useful things) vs. the default, which is to go to standard error."
+	echo ""
+	echo "modimp_tabcomplete_on    modimp_tabcomplete_off"
+	echo "  Turns context-sensitive, Cray-specific tab completion on and off in your"
+	echo "  shell. "
+	echo ""
+	echo "  The above options are typically beneficial, and should be safe to turn"
+	echo "  on all the time.  If you ignore them, you'll never notice the difference."
+	echo "  The other two parts of modimp (below) do change the appearance and behavior"
+	echo "  of your shell in everyday use."
+	echo ""
+	echo "modimp_prompt_setup  modimp_prompt_reset  modimp_prompt_commit  modimp_prompt_help"
+	echo "  Modimp provides a bunch of options for giving your bash shell a"
+	echo "  context-sensitive prompt string, that tells you, for instance, what modules"
+	echo "  you currently have loaded, and other things about your shell environment and"
+	echo "  your current directory.  modimp_prompt_setup gives you a dynamic prompt"
+	echo "  so you can try it out.  modimp_prompt_reset removes all the dynamic prompt"
+	echo "  features and gives you back what you had.  modimp_prompt_help explains how"
+	echo "  the dynamic features work and how to configure them.  modimp_prompt_commit"
+	echo "  writes your current configuration to your init files so your prompt will"
+	echo "  be that way whenever you log in."
+	echo ""
+	echo "modimp_show_all_if_ambiguous_on   modimp_show_all_if_ambiguous_off"
+	echo "  By default, bash tab-completion does different things when you hit <TAB>"
+	echo "  multiple times, giving you more help each time.  With this modimp feature"
+	echo "  turned on, the shell dumps ALL possible completions for your tabbed command"
+	echo "  immediately.  Since this effects tab-completion globally within your shell,"
+	echo "  this is a separate option."
+	echo ""
+	echo "Typically, site installation enables module_to_stdout and tabcomplete by default,"
+	echo "since those don't do anything unless you invoke them specifically and they"
+	echo "shouldn't have any adverse effects on the shell.  If for some reason you want"
+	echo "those commands turned off in your shell, at the following lines to your"
+	echo ".profile and .bashrc files:"
+	echo "modimp_module_to_stdout_off"
+	echo "modimp_tabcomplete_off"
+	echo ""
+    }
+    export -f modimp_help
+   
+# end of dynamic prompt_functions
+fi 
